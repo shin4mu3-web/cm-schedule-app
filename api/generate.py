@@ -131,21 +131,29 @@ def _parse_meta_ftv(text: str) -> dict:
         r"契約番号\s*[：:]\s*([A-Za-zＡ-Ｚ０-９0-9]+)"
     ))
 
-    # スポンサー（「スポンサー [名前]」形式 or 「スポンサー：[名前]」形式）
+    def strip_code(s: str) -> str:
+        """「012345:名前」形式のコードプレフィックスを除去"""
+        return re.sub(r"^\d+:", "", s).strip()
+
+    # スポンサー（「スポンサー [NNNNNN:名前]」形式 or 「スポンサー：[名前]」形式）
     m_sp = re.search(
-        r"スポンサー\s*[：:]?\s*(.+?)\s+(?:商品名称|商品名|A単価)", text
+        r"スポンサー\s*[：:]?\s*(\S+(?:\s+\S+)*?)\s+(?:秒数比|担当者|商品名称|商品名|A単価)", text
     )
-    meta["sponsor"] = m_sp.group(1).strip() if m_sp else ex(r"スポンサー\s+(\S+)")
+    meta["sponsor"] = strip_code(m_sp.group(1).strip()) if m_sp else ""
 
     # 代理店
-    m_ag = re.search(r"代理店\s*[：:]?\s*(.+?)\s+(?:契約期間|外勤)", text)
-    meta["agency"] = m_ag.group(1).strip() if m_ag else ""
+    m_ag = re.search(r"代理店\s*[：:]?\s*(\S+)", text)
+    meta["agency"] = strip_code(m_ag.group(1).strip()) if m_ag else ""
 
     # 商品名
-    meta["product"] = ex(r"商品名称?\s*[：:]?\s*(.+?)\s+(?:代理店|秒数|枠)")
+    meta["product"] = ex(r"商品名称?\s*\n?(.+)").split("\n")[0].strip()
 
-    # 担当者
-    meta["person"] = ex(r"外勤\s*[：:]?\s*(.+)")
+    # 担当者（「NNNNNN:田中 将彦」形式 → 名前だけ）
+    m_pr = re.search(r"担当者\s+(?:\d+:)?(.+?)\s+\d+\.\d+%", text)
+    if m_pr:
+        meta["person"] = strip_code(m_pr.group(1).strip())
+    else:
+        meta["person"] = strip_code(ex(r"担当者\s+(\S+)"))
 
     # 秒数
     meta["seconds"] = int(ex(r"(?:枠取り)?秒数\s*[：:]?\s*(\d+)", "15"))
