@@ -55,24 +55,38 @@ def _parse_meta_fct_tuf(text: str) -> dict:
 
     meta = {
         "format":        "fct_tuf",
-        "contract_code": zen2han(ex(r"契約コード\s*：\s*([A-Za-zＡ-Ｚ０-９0-9]+")),
-        "sponsor":       ex(r"スポンサー\s*：\s*(.+?)\s+A単価"),
-        "agency":        ex(r"広告会社\s*：\s*(.+?)\s+評価欄帯域"),
-        "person":        ex(r"外勤\s*：\s*(.+)"),
-        "product":       ex(r"商品名\s*：\s*(.+?)\s+枠取りパターン"),
-        "seconds":       int(ex(r"枠取り秒数\s*：\s*(\d+)", "15")),
+        "contract_code": zen2han(ex(r"契約コード\s*[：:]\s*([A-Za-zＡ-Ｚ０-９0-9]+")),
+        # FCT: 「A単価」区切り / KFB: 「契約形態」区切り
+        "sponsor":       ex(r"スポンサー\s*[：:]\s*(.+?)\s+(?:A単価|契約形態)"),
+        # FCT: 「広告会社」/ KFB・TUF: 「代理店」
+        "agency":        ex(r"(?:広告会社|代理店)\s*[：:]\s*(.+?)(?:\s+(?:評価欄帯域|$)|\n)", ""),
+        "person":        ex(r"外勤\s*[：:]\s*(.+?)\s+(?:時間取パターン|$)").split("\n")[0],
+        # FCT: 「商品名」/ KFB: 「商品記号」
+        "product":       ex(r"(?:商品名|商品記号)\s*[：:]\s*(.+?)\s+(?:枠取りパターン|支社|$)").split("\n")[0],
+        # FCT: 「枠取り秒数」/ KFB: 「契約秒数」
+        "seconds":       int(ex(r"(?:枠取り|契約)秒数\s*[：:]\s*(\d+)", "15")),
     }
 
     sm = re.search(r"^([^\s/]+／[^\s]+)\s+\d+／\d+", text, re.MULTILINE)
     meta["station"] = sm.group(1).split("／")[0] if sm else ""
 
-    pm = re.search(r"契約期間\s*：\s*(\d{4}/\d{2}/\d{2})～(\d{4}/\d{2}/\d{2})", text)
+    # 契約期間: 4桁年 (FCT/TUF) または 2桁年 (KFB) に対応
+    pm = re.search(r"契約期間\s*[：:]\s*(\d{2,4}/\d{2}/\d{2})[〜～](\d{2,4}/\d{2}/\d{2})", text)
     if not pm:
         raise ValueError("契約期間が取得できません")
-    meta["period_start"] = datetime.strptime(pm.group(1), "%Y/%m/%d")
-    meta["period_end"]   = datetime.strptime(pm.group(2), "%Y/%m/%d")
+    def _parse_ymd(s: str) -> datetime:
+        parts = s.split("/")
+        y = int(parts[0])
+        if y < 100:
+            y += 2000
+        return datetime(y, int(parts[1]), int(parts[2]))
+    meta["period_start"] = _parse_ymd(pm.group(1))
+    meta["period_end"]   = _parse_ymd(pm.group(2))
 
+    # 総本数: FCT「枠取りパターン...N本」/ KFB「N本 N本 N本 N本 N本」（4ランク合計）
     tm = re.search(r"枠取りパターン[^\n]+?(\d+)本\s*$", text, re.MULTILINE)
+    if not tm:
+        tm = re.search(r"(?:\d+本\s+){3,}(\d+)本", text)
     meta["total_count"] = int(tm.group(1)) if tm else 0
     return meta
 
