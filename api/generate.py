@@ -19,7 +19,7 @@ DOW_JA = "月火水木金土日"
 DOW_TO_COL = {0: 1, 1: 5, 2: 9, 3: 13, 4: 17, 5: 21, 6: 25}
 
 
-# ── PDF解析 ──────────────────────────────────────
+# ── ユーティリティ ──────────────────────────────────
 
 def zen2han(s: str) -> str:
     return s.translate(str.maketrans(
@@ -28,16 +28,33 @@ def zen2han(s: str) -> str:
     ))
 
 
-def parse_meisai(pdf_bytes: bytes) -> dict:
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-        all_tables = [t for p in pdf.pages for t in p.extract_tables()]
+def _detect_format(text: str, tables: list) -> str:
+    """PDFフォーマット自動判定: 'fct_tuf' または 'ftv'"""
+    if "契約コード" in text:
+        return "fct_tuf"
+    if "契約番号" in text:
+        return "ftv"
+    # テーブルセルのヘッダーパターンで判定
+    for table in tables:
+        for row in table:
+            for cell in (row or []):
+                s = str(cell or "")
+                if re.search(r"≪\d{2}/\d{2}", s):
+                    return "fct_tuf"
+                if re.search(r"\d{2}/\d{2}\([月火水木金土日]\)", s):
+                    return "ftv"
+    return "fct_tuf"  # デフォルト
 
+
+# ── FCT/TUF フォーマット ──────────────────────────────
+
+def _parse_meta_fct_tuf(text: str) -> dict:
     def ex(pattern, default=""):
-        m = re.search(pattern, full_text)
+        m = re.search(pattern, text)
         return m.group(1).strip() if m else default
 
     meta = {
+        "format":        "fct_tuf",
         "contract_code": zen2han(ex(r"契約コード\s*：\s*([A-Za-zＡ-Ｚ０-９0-9]+")),
         "sponsor":       ex(r"スポンサー\s*：\s*(.+?)\s+A単価"),
         "agency":        ex(r"広告会社\s*：\s*(.+?)\s+評価欄帯域"),
@@ -46,27 +63,21 @@ def parse_meisai(pdf_bytes: bytes) -> dict:
         "seconds":       int(ex(r"枠取り秒数\s*：\s*(\d+)", "15")),
     }
 
-    # 放送局
-    sm = re.search(r"^([^\s/]+／[^\s]+)\s+\d+／\d+", full_text, re.MULTILINE)
+    sm = re.search(r"^([^\s/]+／[^\s]+)\s+\d+／\d+", text, re.MULTILINE)
     meta["station"] = sm.group(1).split("／")[0] if sm else ""
 
-    # 契約期間
-    pm = re.search(r"契約期間\s*：\s*(\d{4}/\d{2}/\d{2})～(\d{4}/\d{2}/\d{2})", full_text)
+    pm = re.search(r"契約期間\s*：\s*(\d{4}/\d{2}/\d{2})～(\d{4}/\d{2}/\d{2})", text)
     if not pm:
         raise ValueError("契約期間が取得できません")
     meta["period_start"] = datetime.strptime(pm.group(1), "%Y/%m/%d")
     meta["period_end"]   = datetime.strptime(pm.group(2), "%Y/%m/%d")
 
-    # 総本数
-    tm = re.search(r"枠取りパターン[^\n]+?(\d+)本\s*$", full_text, re.MULTILINE)
+    tm = re.search(r"枠取りパターン[^\n]+?(\d+)本\s*$", text, re.MULTILINE)
     meta["total_count"] = int(tm.group(1)) if tm else 0
-
-    # スケジュール（テーブルから）
-    meta["schedule"] = _parse_schedule(all_tables)
     return meta
 
 
-def _parse_schedule(tables: list) -> dict:
+def _parse_schedule_fct_tuf(tables: list) -> dict:
     schedule = {}
     day_re   = re.compile(r"≪(\d{2}/\d{2})\s*[月火水木金土日]≫")
     entry_re = re.compile(r"ﾚ\s*(\d{4})([TS])\s*([ABCS])\s*(\d+)\"")
@@ -106,6 +117,136 @@ def _parse_schedule(tables: list) -> dict:
     return schedule
 
 
+# ── FTV フォーマット ──────────────────────────────────
+
+def _parse_meta_ftv(text: str) -> dict:
+    def ex(pattern, default=""):
+        m = re.search(pattern, text)
+        return m.group(1).strip() if m else default
+
+    meta = {"format": "ftv"}
+
+    # 契約番号
+    meta["contract_code"] = zen2han(ex(
+        r"契約番号\s*[：:]\s*([A-Za-zＡ-Ｚ０-９0-9]+)"
+    ))
+
+    # スポンサー（「スポンサー [名前]」形式 or 「スポンサー：[名前]」形式）
+    m_sp = re.search(
+        r"スポンサー\s*[：:]?\s*(.+?)\s+(?:商品名称|商品名|A単価)", text
+    )
+    meta["sponsor"] = m_sp.group(1).strip() if m_sp else ex(r"スポンサー\s+(\S+)")
+
+    # 代理店
+    m_ag = re.search(r"代理店\s*[：:]?\s*(.+?)\s+(?:契約期間|外勤)", text)
+    meta["agency"] = m_ag.group(1).strip() if m_ag else ""
+
+    # 商品名
+    meta["product"] = ex(r"商品名称?\s*[：:]?\s*(.+?)\s+(?:代理店|秒数|枠)")
+
+    # 担当者
+    meta["person"] = ex(r"外勤\s*[：:]?\s*(.+)")
+
+    # 秒数
+    meta["seconds"] = int(ex(r"(?:枠取り)?秒数\s*[：:]?\s*(\d+)", "15"))
+
+    # 放送局（FTV 福島テレビ 等の局名行）
+    m_st = re.search(r"(FTV|TUF|FCT|KFB|福島[^\s]*テレビ[^\s]*)\s+SPOT", text)
+    meta["station"] = m_st.group(1) if m_st else "FTV"
+
+    # 契約期間: 「2024年 2月10日 ～ 2024年 3月 2日」
+    pm = re.search(
+        r"(\d{4})年\s*(\d+)月\s*(\d+)日\s*[〜～]\s*(\d{4})年\s*(\d+)月\s*(\d+)日",
+        text
+    )
+    if pm:
+        meta["period_start"] = datetime(int(pm.group(1)), int(pm.group(2)), int(pm.group(3)))
+        meta["period_end"]   = datetime(int(pm.group(4)), int(pm.group(5)), int(pm.group(6)))
+    else:
+        # 別パターン: YYYY/MM/DD
+        pm2 = re.search(r"(\d{4}/\d{2}/\d{2})[〜～](\d{4}/\d{2}/\d{2})", text)
+        if pm2:
+            meta["period_start"] = datetime.strptime(pm2.group(1), "%Y/%m/%d")
+            meta["period_end"]   = datetime.strptime(pm2.group(2), "%Y/%m/%d")
+        else:
+            raise ValueError("契約期間が取得できません")
+
+    # 総本数
+    tm = re.search(r"(\d+)\s*本", text)
+    meta["total_count"] = int(tm.group(1)) if tm else 0
+    return meta
+
+
+def _parse_schedule_ftv(tables: list) -> dict:
+    """FTVスケジュール解析: 'MM/DD(曜)' ヘッダー + 'H:MM[P] SS RANK' エントリ"""
+    schedule = {}
+    day_re   = re.compile(r"(\d{2}/\d{2})\([月火水木金土日]\)")
+    # H:MM[P] SS RANK — Pあり=PT、なし=SB
+    entry_re = re.compile(r"(\d+):(\d{2})(P?)\s+(\d+)\s+([ABCS])")
+
+    for table in tables:
+        current_days = {}
+        for row in table:
+            if not row:
+                continue
+            cells = [str(c) if c is not None else "" for c in row]
+
+            # 日付ヘッダー行の検出（全セルの半数以上がMM/DD(曜)形式）
+            day_matches = {
+                ci: day_re.search(c).group(1)
+                for ci, c in enumerate(cells)
+                if day_re.search(c)
+            }
+            if len(day_matches) >= 3:
+                current_days = day_matches
+                for d in current_days.values():
+                    schedule.setdefault(d, [])
+                continue
+
+            # エントリ行
+            for ci, cell in enumerate(cells):
+                if not cell.strip() or ci not in current_days:
+                    continue
+                day_key = current_days[ci]
+                for line in cell.split("\n"):
+                    line = line.strip()
+                    em = entry_re.search(line)
+                    if not em:
+                        continue
+                    h    = int(em.group(1))
+                    m_   = int(em.group(2))
+                    past = h >= 24
+                    if past:
+                        h -= 24
+                    schedule[day_key].append({
+                        "time_obj":      time(h, m_),
+                        "sb_pt":         "PT" if em.group(3) == "P" else "SB",
+                        "seconds":       int(em.group(4)),
+                        "past_midnight": past,
+                    })
+
+    return schedule
+
+
+# ── メイン解析エントリ ────────────────────────────────
+
+def parse_meisai(pdf_bytes: bytes) -> dict:
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        all_tables = [t for p in pdf.pages for t in p.extract_tables()]
+
+    fmt = _detect_format(full_text, all_tables)
+
+    if fmt == "ftv":
+        meta = _parse_meta_ftv(full_text)
+        meta["schedule"] = _parse_schedule_ftv(all_tables)
+    else:
+        meta = _parse_meta_fct_tuf(full_text)
+        meta["schedule"] = _parse_schedule_fct_tuf(all_tables)
+
+    return meta
+
+
 # ── Excel生成 ─────────────────────────────────────
 
 def _excel_time(entry):
@@ -132,14 +273,12 @@ def build_excel(meta: dict, materials: list, station_name: str,
     ws = wb.active
     year = meta["period_start"].year
 
-    # 日付
     if doc_date:
         try:
             ws.cell(2, 22, datetime.strptime(doc_date, "%Y/%m/%d"))
         except ValueError:
             pass
 
-    # 放送局
     loc = station_name or meta.get("station", "")
     if station_person:
         loc += f"　{station_person}様"
