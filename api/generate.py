@@ -55,7 +55,7 @@ def _parse_meta_fct_tuf(text: str) -> dict:
 
     meta = {
         "format":        "fct_tuf",
-        "contract_code": zen2han(ex(r"契約コード\s*[：:]\s*([A-Za-zＡ-Ｚ０-９0-9]+")),
+        "contract_code": zen2han(ex(r"契約コード\s*[：:]\s*([A-Za-zＡ-Ｚ０-９0-9]+)")),
         # FCT: 「A単価」区切り / KFB: 「契約形態」区切り
         "sponsor":       ex(r"スポンサー\s*[：:]\s*(.+?)\s+(?:A単価|契約形態)"),
         # FCT: 「広告会社」/ KFB・TUF: 「代理店」
