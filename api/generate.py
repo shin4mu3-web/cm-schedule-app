@@ -293,6 +293,9 @@ def build_excel(meta: dict, materials: list, station_name: str,
                 station_person: str, doc_date: str) -> bytes:
     wb = load_workbook(TEMPLATE_PATH)
     ws = wb.active
+    # 結合セルに書き込むとエラーになるため全解除
+    for merge in list(ws.merged_cells.ranges):
+        ws.unmerge_cells(str(merge))
     year = meta["period_start"].year
 
     if doc_date:
