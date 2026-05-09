@@ -436,21 +436,40 @@ def generate():
     except Exception:
         stations_info = []
 
-    stations = []
-    errors   = []
-    for i, f in enumerate(meisai_files):
+    # PDF読み込みを先に済ませる（ファイルオブジェクトはスレッドセーフでないため）
+    file_data = [(f.filename, f.read()) for f in meisai_files]
+
+    # PDF解析を並列実行
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def parse_one(args):
+        idx, filename, pdf_bytes, stn, per = args
+        try:
+            meta = parse_meisai(pdf_bytes)
+            return idx, {"meta": meta, "materials": materials,
+                         "station_name": stn, "station_person": per,
+                         "doc_date": doc_date}, None
+        except Exception as e:
+            return idx, None, f"{filename}: {str(e)}"
+
+    tasks = []
+    for i, (fname, pdf_bytes) in enumerate(file_data):
         info = stations_info[i] if i < len(stations_info) else {}
         stn  = info.get("station", station_name)
         per  = info.get("person",  station_person)
-        try:
-            meta = parse_meisai(f.read())
-            stations.append({
-                "meta": meta, "materials": materials,
-                "station_name": stn, "station_person": per,
-                "doc_date": doc_date,
-            })
-        except Exception as e:
-            errors.append(f"{f.filename}: {str(e)}")
+        tasks.append((i, fname, pdf_bytes, stn, per))
+
+    results_map = {}
+    errors = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for idx, station_data, err in executor.map(parse_one, tasks):
+            if err:
+                errors.append(err)
+            else:
+                results_map[idx] = station_data
+
+    # 元の順序を保持
+    stations = [results_map[i] for i in sorted(results_map)]
 
     if not stations:
         return jsonify({"error": "PDF解析エラー: " + " / ".join(errors)}), 422
