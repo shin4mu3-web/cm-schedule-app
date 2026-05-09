@@ -64,7 +64,7 @@ export default function Home() {
     form.append("materials", JSON.stringify(materials));
 
     try {
-      const res = await fetch("/api/generate-multi", { method: "POST", body: form });
+      const res = await fetch("/api/generate", { method: "POST", body: form });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `エラー: ${res.status}`);

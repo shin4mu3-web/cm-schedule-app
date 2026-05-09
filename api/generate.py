@@ -414,43 +414,6 @@ def build_excel_multi(stations: list) -> bytes:
 
 @app.route("/api/generate", methods=["POST"])
 def generate():
-    meisai_file = request.files.get("meisai")
-    if not meisai_file:
-        return jsonify({"error": "明細リストPDFが必要です"}), 400
-
-    try:
-        meta = parse_meisai(meisai_file.read())
-    except Exception as e:
-        return jsonify({"error": f"PDF解析エラー: {str(e)}"}), 422
-
-    import json as _json
-    materials_raw = request.form.get("materials", "[]")
-    try:
-        materials = _json.loads(materials_raw)
-    except Exception:
-        materials = []
-
-    excel_bytes = build_excel(
-        meta=meta,
-        materials=materials,
-        station_name=request.form.get("station", ""),
-        station_person=request.form.get("person", ""),
-        doc_date=request.form.get("date", ""),
-    )
-
-    sponsor_short = re.sub(r"[^\w]", "", meta.get("sponsor", "output"))[:20]
-    filename = f"CMスケ表_{sponsor_short}.xlsx"
-
-    return send_file(
-        io.BytesIO(excel_bytes),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        as_attachment=True,
-        download_name=filename,
-    )
-
-
-@app.route("/api/generate-multi", methods=["POST"])
-def generate_multi():
     import json as _json
     meisai_files = request.files.getlist("meisai")
     if not meisai_files:
@@ -472,17 +435,16 @@ def generate_multi():
         try:
             meta = parse_meisai(f.read())
             stations.append({
-                "meta":           meta,
-                "materials":      materials,
-                "station_name":   station_name,
+                "meta": meta, "materials": materials,
+                "station_name": station_name,
                 "station_person": station_person,
-                "doc_date":       doc_date,
+                "doc_date": doc_date,
             })
         except Exception as e:
             errors.append(f"{f.filename}: {str(e)}")
 
     if not stations:
-        return jsonify({"error": "全ファイルの解析に失敗しました。" + " / ".join(errors)}), 422
+        return jsonify({"error": "PDF解析エラー: " + " / ".join(errors)}), 422
 
     try:
         excel_bytes = build_excel_multi(stations)
