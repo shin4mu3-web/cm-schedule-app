@@ -429,15 +429,24 @@ def generate():
     station_person = request.form.get("person", "")
     doc_date       = request.form.get("date", "")
 
+    # 局ごとの放送局名・担当者（フロントから配列で受け取る）
+    stations_info_raw = request.form.get("stations_info", "[]")
+    try:
+        stations_info = _json.loads(stations_info_raw)
+    except Exception:
+        stations_info = []
+
     stations = []
     errors   = []
-    for f in meisai_files:
+    for i, f in enumerate(meisai_files):
+        info = stations_info[i] if i < len(stations_info) else {}
+        stn  = info.get("station", station_name)
+        per  = info.get("person",  station_person)
         try:
             meta = parse_meisai(f.read())
             stations.append({
                 "meta": meta, "materials": materials,
-                "station_name": station_name,
-                "station_person": station_person,
+                "station_name": stn, "station_person": per,
                 "doc_date": doc_date,
             })
         except Exception as e:
