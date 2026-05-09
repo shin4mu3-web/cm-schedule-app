@@ -54,39 +54,34 @@ export default function Home() {
     if (meisaiFiles.length === 0) return;
 
     setLoading(true);
-    const initial: FileResult[] = meisaiFiles.map(f => ({ name: f.name, status: "waiting" }));
-    setResults(initial);
+    setResults(meisaiFiles.map(f => ({ name: f.name, status: "processing" as const })));
 
-    for (let i = 0; i < meisaiFiles.length; i++) {
-      setResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: "processing" } : r));
+    const form = new FormData();
+    meisaiFiles.forEach(f => form.append("meisai", f));
+    form.append("station",   station);
+    form.append("person",    person);
+    form.append("date",      docDate);
+    form.append("materials", JSON.stringify(materials));
 
-      const form = new FormData();
-      form.append("meisai",    meisaiFiles[i]);
-      form.append("station",   station);
-      form.append("person",    person);
-      form.append("date",      docDate);
-      form.append("materials", JSON.stringify(materials));
-
-      try {
-        const res = await fetch("/api/generate", { method: "POST", body: form });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error((err as { error?: string }).error ?? `エラー: ${res.status}`);
-        }
-        const blob = await res.blob();
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement("a");
-        const cd   = res.headers.get("Content-Disposition") ?? "";
-        const fnm  = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/)?.[1] ?? "CMスケ表.xlsx";
-        a.href     = url;
-        a.download = decodeURIComponent(fnm.replace(/"/g, ""));
-        a.click();
-        URL.revokeObjectURL(url);
-        setResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: "done" } : r));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "不明なエラー";
-        setResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: "error", message: msg } : r));
+    try {
+      const res = await fetch("/api/generate-multi", { method: "POST", body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error ?? `エラー: ${res.status}`);
       }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      const cd   = res.headers.get("Content-Disposition") ?? "";
+      const fnm  = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/)?.[1] ?? "CMスケ表.xlsx";
+      a.href     = url;
+      a.download = decodeURIComponent(fnm.replace(/"/g, ""));
+      a.click();
+      URL.revokeObjectURL(url);
+      setResults(meisaiFiles.map(f => ({ name: f.name, status: "done" as const })));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "不明なエラー";
+      setResults(meisaiFiles.map(f => ({ name: f.name, status: "error" as const, message: msg })));
     }
 
     setLoading(false);

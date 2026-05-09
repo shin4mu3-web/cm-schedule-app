@@ -289,11 +289,9 @@ def _cm_abbr(date_str: str, year: int, materials: list) -> str:
     return materials[0]["abbr"] if materials else ""
 
 
-def build_excel(meta: dict, materials: list, station_name: str,
-                station_person: str, doc_date: str) -> bytes:
-    wb = load_workbook(TEMPLATE_PATH)
-    ws = wb.active
-    # 結合セルに書き込むとエラーになるため全解除
+def _fill_sheet(ws, meta: dict, materials: list, station_name: str,
+                station_person: str, doc_date: str):
+    """1シート分のデータを書き込む"""
     for merge in list(ws.merged_cells.ranges):
         ws.unmerge_cells(str(merge))
     year = meta["period_start"].year
@@ -331,9 +329,7 @@ def build_excel(meta: dict, materials: list, station_name: str,
 
     schedule = meta["schedule"]
     if not schedule:
-        out = io.BytesIO()
-        wb.save(out)
-        return out.getvalue()
+        return
 
     date_objs = {d: datetime(year, int(d[:2]), int(d[3:])) for d in schedule}
     sorted_d  = sorted(date_objs, key=lambda d: date_objs[d])
@@ -371,6 +367,44 @@ def build_excel(meta: dict, materials: list, station_name: str,
                 ws.cell(row, col + 3, _cm_abbr(ds, year, materials))
         crow += 1 + mx + 1
 
+
+def build_excel(meta: dict, materials: list, station_name: str,
+                station_person: str, doc_date: str) -> bytes:
+    wb = load_workbook(TEMPLATE_PATH)
+    ws = wb.active
+    _fill_sheet(ws, meta, materials, station_name, station_person, doc_date)
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def build_excel_multi(stations: list) -> bytes:
+    """複数局を1ファイル・局ごとに1シートで生成
+    stations: [{"meta": ..., "materials": ..., "station_name": ...,
+                "station_person": ..., "doc_date": ...}, ...]
+    """
+    wb = load_workbook(TEMPLATE_PATH)
+    tpl = wb.active  # テンプレートシート（コピー元）
+
+    # 先に全シートを同一ブック内でコピー（copy_worksheetは同一ブック内のみ可）
+    sheets = [tpl]
+    for _ in stations[1:]:
+        sheets.append(wb.copy_worksheet(tpl))
+
+    # 各シートにデータを書き込む
+    used_titles: list[str] = []
+    for ws, s in zip(sheets, stations):
+        title = (s["station_name"] or s["meta"].get("station", "") or
+                 s["meta"].get("sponsor", "局"))[:31]
+        # 重複防止
+        base, n = title, 2
+        while title in used_titles:
+            title = f"{base[:28]}_{n}"; n += 1
+        ws.title = title
+        used_titles.append(title)
+        _fill_sheet(ws, s["meta"], s["materials"],
+                    s["station_name"], s["station_person"], s["doc_date"])
+
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -405,6 +439,57 @@ def generate():
     )
 
     sponsor_short = re.sub(r"[^\w]", "", meta.get("sponsor", "output"))[:20]
+    filename = f"CMスケ表_{sponsor_short}.xlsx"
+
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/api/generate-multi", methods=["POST"])
+def generate_multi():
+    import json as _json
+    meisai_files = request.files.getlist("meisai")
+    if not meisai_files:
+        return jsonify({"error": "明細リストPDFが必要です"}), 400
+
+    materials_raw = request.form.get("materials", "[]")
+    try:
+        materials = _json.loads(materials_raw)
+    except Exception:
+        materials = []
+
+    station_name   = request.form.get("station", "")
+    station_person = request.form.get("person", "")
+    doc_date       = request.form.get("date", "")
+
+    stations = []
+    errors   = []
+    for f in meisai_files:
+        try:
+            meta = parse_meisai(f.read())
+            stations.append({
+                "meta":           meta,
+                "materials":      materials,
+                "station_name":   station_name,
+                "station_person": station_person,
+                "doc_date":       doc_date,
+            })
+        except Exception as e:
+            errors.append(f"{f.filename}: {str(e)}")
+
+    if not stations:
+        return jsonify({"error": "全ファイルの解析に失敗しました。" + " / ".join(errors)}), 422
+
+    try:
+        excel_bytes = build_excel_multi(stations)
+    except Exception as e:
+        return jsonify({"error": f"Excel生成エラー: {str(e)}"}), 500
+
+    sponsor_short = re.sub(r"[^\w]", "", stations[0]["meta"].get("sponsor", "output"))[:15]
     filename = f"CMスケ表_{sponsor_short}.xlsx"
 
     return send_file(
